@@ -1,36 +1,112 @@
-This is a [Next.js](https://nextjs.org/) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+This is a full-stack learning platform starter using Next.js for frontend + server runtime, with scaffolding for Supabase, Stripe, OpenAI, LangChain (Python), and video generation workflows.
+
+## Stack
+
+- Frontend: Next.js 14, React 18, TypeScript, Tailwind CSS
+- Backend: Supabase (PostgreSQL), Next.js API routes, Supabase serverless function scaffolding
+- AI: OpenAI GPT model integration in Next.js + LangChain Python service scaffold
+- Video: FFmpeg/Manim integration placeholders
+<!-- - Video: FFmpeg/Manim/HeyGen integration placeholders -->
+- Payments: Stripe checkout session endpoint
 
 ## Getting Started
 
-First, run the development server:
+1) Install dependencies:
+
+```bash
+npm install
+```
+
+2) Add environment values:
+
+```bash
+cp .env.example .env.local
+```
+
+3) Run the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Included Endpoints
 
-This project uses [`next/font`](https://nextjs.org/docs/basic-features/font-optimization) to automatically optimize and load Inter, a custom Google Font.
+- `GET /api/health`
+<!-- - `GET /api/heygen/test` -->
+- `POST /api/generate-text`
+- `POST /api/create-checkout-session`
+- `POST /api/stripe/webhook`
+- `POST /api/video/render`
 
-## Learn More
+## Stripe Setup (Test Mode)
 
-To learn more about Next.js, take a look at the following resources:
+1) Add test keys from Stripe Dashboard Developers > API keys:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `STRIPE_SECRET_KEY=sk_test_...`
+- `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_...`
+- `STRIPE_PRICE_ID=price_...`
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js/) - your feedback and contributions are welcome!
+2) Start your app:
 
-## Deploy on Vercel
+```bash
+npm run dev
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+3) Install and authenticate Stripe CLI:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/deployment) for more details.
+```bash
+stripe login
+```
+
+4) Forward events to your local webhook route:
+
+```bash
+stripe listen --forward-to localhost:3000/api/stripe/webhook
+```
+
+5) Copy the webhook signing secret printed by Stripe CLI (`whsec_...`) into:
+
+- `STRIPE_WEBHOOK_SECRET=whsec_...`
+
+6) Trigger a test event:
+
+```bash
+stripe trigger checkout.session.completed
+```
+
+<!--
+## HeyGen API Key Setup
+
+1) Create/sign in to your HeyGen account.
+2) Open API settings in the HeyGen dashboard.
+3) Generate or copy your API key.
+4) Add it to:
+
+- `HEYGEN_API_KEY=...`
+
+5) Verify your key locally:
+
+```bash
+curl http://localhost:3000/api/heygen/test
+```
+
+If valid, the response includes `"ok": true`.
+-->
+
+## AI Service (Python)
+
+The `ai-service/` folder includes a starter FastAPI service for LangChain-based workflows.
+
+```bash
+cd ai-service
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
+```
+
+## Supabase Functions
+
+A starter function exists at `supabase/functions/process-video/index.ts` for serverless job orchestration.
