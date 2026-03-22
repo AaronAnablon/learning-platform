@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: learning-platform-ai-service
+    runtime: docker
+    rootDir: ai-service
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: FFMPEG_PATH
+        value: ffmpeg

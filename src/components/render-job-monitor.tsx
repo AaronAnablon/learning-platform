@@ -1,0 +1,101 @@
+"use client";
+
+import { useCallback, useState } from "react";
+
+type RenderJob = {
+  id: string;
+  lesson_id: string;
+  status: "dry_run" | "queued" | "running" | "completed" | "failed";
+  provider: string;
+  created_at: string;
+  updated_at: string;
+  error_message: string | null;
+};
+
+export function RenderJobMonitor() {
+  const [lessonId, setLessonId] = useState("");
+  const [jobs, setJobs] = useState<RenderJob[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadJobs = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const query = new URLSearchParams();
+      if (lessonId.trim()) {
+        query.set("lessonId", lessonId.trim());
+      }
+
+      const response = await fetch(`/api/video/jobs?${query.toString()}`);
+      const body = (await response.json()) as {
+        jobs?: RenderJob[];
+        error?: string;
+        details?: string;
+      };
+
+      if (!response.ok) {
+        setError(body.error ?? "Failed to load jobs");
+        setJobs([]);
+        return;
+      }
+
+      setJobs(body.jobs ?? []);
+    } catch (fetchError) {
+      setError(String(fetchError));
+      setJobs([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [lessonId]);
+
+  return (
+    <section className="rounded-lg border p-4">
+      <h2 className="mb-2 text-lg font-semibold">Render Job Monitor</h2>
+      <p className="mb-3 text-sm text-gray-600 dark:text-gray-300">
+        Query recent render jobs and status updates persisted in Supabase.
+      </p>
+
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row">
+        <input
+          value={lessonId}
+          onChange={(event) => setLessonId(event.target.value)}
+          placeholder="Optional lessonId filter"
+          className="w-full rounded-md border px-3 py-2 text-sm"
+        />
+        <button
+          type="button"
+          onClick={loadJobs}
+          className="rounded-md border px-3 py-2 text-sm font-medium"
+        >
+          {loading ? "Loading..." : "Refresh"}
+        </button>
+      </div>
+
+      {error ? <p className="text-sm text-red-600">{error}</p> : null}
+
+      <ul className="space-y-2 text-sm">
+        {jobs.map((job) => (
+          <li key={job.id} className="rounded-md border p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-medium">{job.id}</span>
+              <span className="rounded border px-2 py-0.5 text-xs uppercase">
+                {job.status}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+              lessonId: {job.lesson_id} • provider: {job.provider}
+            </p>
+            <p className="text-xs text-gray-600 dark:text-gray-300">
+              created: {new Date(job.created_at).toLocaleString()}
+            </p>
+            {job.error_message ? (
+              <p className="mt-1 text-xs text-red-600">{job.error_message}</p>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}

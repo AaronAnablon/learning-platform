@@ -1,3 +1,5 @@
+import { RenderJobMonitor } from "@/components/render-job-monitor";
+
 export default function Home() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-6 p-8 md:p-16">
@@ -16,8 +18,12 @@ export default function Home() {
           <li>POST /api/create-checkout-session</li>
           <li>POST /api/stripe/webhook</li>
           <li>POST /api/video/render</li>
+          <li>GET /api/video/jobs</li>
+          <li>GET /api/video/jobs/:jobId</li>
         </ul>
       </section>
+
+      <RenderJobMonitor />
 
       <section className="rounded-lg border p-4">
         <h2 className="mb-2 text-lg font-semibold">Next Steps</h2>
