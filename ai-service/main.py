@@ -1,12 +1,14 @@
 import base64
 import json
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="Learning Platform AI Service")
@@ -62,13 +64,54 @@ class ReplayRenderRequest(BaseModel):
     renderOptions: RenderOptions
 
 
+class RenderPipelineError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        stage: str,
+        command: list[str],
+        returncode: int,
+        stdout: str,
+        stderr: str,
+    ) -> None:
+        self.stage = stage
+        self.command = command
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        super().__init__(
+            f"{stage} command failed with exit code {returncode}: {' '.join(command)}"
+        )
+
+
+def _tail_text(value: str, max_chars: int = 4000) -> str:
+    trimmed = value.strip()
+    if len(trimmed) <= max_chars:
+        return trimmed
+    return trimmed[-max_chars:]
+
+
 def _run_ffmpeg(command: list[str]) -> None:
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(
-            f"FFmpeg command failed: {' '.join(command)}\n"
-            f"stdout: {result.stdout}\n"
-            f"stderr: {result.stderr}"
+        raise RenderPipelineError(
+            stage="ffmpeg",
+            command=command,
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+
+
+def _run_command(command: list[str], command_name: str) -> None:
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RenderPipelineError(
+            stage=command_name.lower(),
+            command=command,
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
         )
 
 
@@ -76,13 +119,76 @@ def _encode_file(path: Path) -> str:
     return base64.b64encode(path.read_bytes()).decode("utf-8")
 
 
-def _generate_video_artifacts(payload: ReplayRenderRequest) -> dict:
-    ffmpeg_bin = os.getenv("FFMPEG_PATH", "ffmpeg")
-    duration_seconds = max(1, int(round(payload.estimatedDurationMs / 1000)))
+def _find_scene_name(script: str) -> str:
+    scene_matches = re.findall(
+        r"class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*[^)]*Scene[^)]*\)\s*:",
+        script,
+    )
+
+    if not scene_matches:
+        raise RuntimeError(
+            "No renderable Manim Scene class found in script. "
+            "Expected a class like 'class MyScene(Scene):'."
+        )
+
+    return scene_matches[0]
+
+
+def _build_manim_script_with_config(payload: ReplayRenderRequest) -> str:
+    color = payload.renderOptions.backgroundColor or "#0F172A"
+    header_lines = [
+        f"config.pixel_width = {payload.renderOptions.width}",
+        f"config.pixel_height = {payload.renderOptions.height}",
+        f"config.frame_rate = {payload.renderOptions.fps}",
+        f"config.background_color = '{color}'",
+        "",
+    ]
+    return "\n".join(header_lines) + payload.script
+
+
+def _render_with_manim(script_path: Path, scene_name: str, payload: ReplayRenderRequest) -> Path:
+    manim_bin = os.getenv("MANIM_PATH", "manim")
+    media_dir = script_path.parent / "media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+
     width = payload.renderOptions.width
     height = payload.renderOptions.height
     fps = payload.renderOptions.fps
-    color = payload.renderOptions.backgroundColor.lstrip("#") or "0F172A"
+
+    command = [
+        manim_bin,
+        "--progress_bar",
+        "none",
+        "--disable_caching",
+        "-qk",
+        "--fps",
+        str(fps),
+        "-r",
+        f"{width},{height}",
+        "--format",
+        "mp4",
+        "--media_dir",
+        str(media_dir),
+        "--output_file",
+        "lesson",
+        str(script_path),
+        scene_name,
+    ]
+
+    _run_command(command, "Manim")
+
+    rendered_candidates = sorted(media_dir.rglob("lesson.mp4"))
+    if not rendered_candidates:
+        rendered_candidates = sorted(media_dir.rglob("*.mp4"))
+
+    if not rendered_candidates:
+        raise RuntimeError("Manim did not produce an MP4 output file")
+
+    return rendered_candidates[0]
+
+
+def _generate_video_artifacts(payload: ReplayRenderRequest) -> dict:
+    ffmpeg_bin = os.getenv("FFMPEG_PATH", "ffmpeg")
 
     with tempfile.TemporaryDirectory(prefix=f"replay-{payload.lessonId}-") as temp_dir:
         temp_path = Path(temp_dir)
@@ -92,20 +198,23 @@ def _generate_video_artifacts(payload: ReplayRenderRequest) -> dict:
         hls_dir.mkdir(parents=True, exist_ok=True)
         hls_manifest_path = hls_dir / "index.m3u8"
 
-        script_path.write_text(payload.script, encoding="utf-8")
+        configured_script = _build_manim_script_with_config(payload)
+        script_path.write_text(configured_script, encoding="utf-8")
+        scene_name = _find_scene_name(configured_script)
+        rendered_mp4 = _render_with_manim(script_path, scene_name, payload)
 
         _run_ffmpeg(
             [
                 ffmpeg_bin,
                 "-y",
-                "-f",
-                "lavfi",
                 "-i",
-                f"color=c={color}:s={width}x{height}:d={duration_seconds}:r={fps}",
+                str(rendered_mp4),
                 "-c:v",
                 "libx264",
                 "-pix_fmt",
                 "yuv420p",
+                "-movflags",
+                "+faststart",
                 str(mp4_path),
             ]
         )
@@ -145,6 +254,7 @@ def _generate_video_artifacts(payload: ReplayRenderRequest) -> dict:
             "provider": payload.provider,
             "estimatedDurationMs": payload.estimatedDurationMs,
             "chapterMarkers": payload.chapterMarkers,
+            "sceneName": scene_name,
         }
 
         return {
@@ -177,10 +287,37 @@ def health():
 
 @app.post("/generate")
 def generate_text(payload: GenerateRequest):
-    return {
-        "message": "Integrate LangChain pipeline here",
-        "prompt": payload.prompt,
-    }
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="OPENAI_API_KEY is not configured for ai-service",
+        )
+
+    model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    try:
+        llm = ChatOpenAI(model=model_name, api_key=api_key, temperature=0)
+        response = llm.invoke(payload.prompt)
+        content = response.content
+
+        if isinstance(content, list):
+            text = "\n".join(
+                str(part.get("text", "")) if isinstance(part, dict) else str(part)
+                for part in content
+            ).strip()
+        else:
+            text = str(content).strip()
+
+        return {
+            "message": text,
+            "model": model_name,
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to generate text via LangChain: {exc}",
+        ) from exc
 
 
 @app.post("/compile-replay")
@@ -224,7 +361,28 @@ def render_replay(payload: ReplayRenderRequest):
     if payload.provider != "manim":
         return {"error": "Only manim provider is supported in MVP"}
 
-    artifacts = _generate_video_artifacts(payload)
+    try:
+        artifacts = _generate_video_artifacts(payload)
+    except RenderPipelineError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "Render pipeline command failed",
+                "stage": exc.stage,
+                "returncode": exc.returncode,
+                "command": " ".join(exc.command),
+                "stderrTail": _tail_text(exc.stderr),
+                "stdoutTail": _tail_text(exc.stdout),
+            },
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Render pipeline failed",
+                "message": str(exc),
+            },
+        ) from exc
 
     return {
         "status": "completed",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type RenderJob = {
   id: string;
@@ -12,10 +12,61 @@ type RenderJob = {
   error_message: string | null;
 };
 
-export function RenderJobMonitor() {
-  const [lessonId, setLessonId] = useState("");
+type RenderJobDetail = RenderJob & {
+  queue_response?: Record<string, unknown> | null;
+};
+
+type ArtifactInfo = {
+  name: string;
+  path: string;
+  signedUrl: string;
+};
+
+interface RenderJobMonitorProps {
+  initialLessonId?: string;
+  focusJobId?: string | null;
+}
+
+function readArtifacts(input: unknown): ArtifactInfo[] {
+  if (!input || typeof input !== "object") {
+    return [];
+  }
+
+  const response = input as Record<string, unknown>;
+  const artifacts = response.artifacts;
+
+  if (!artifacts || typeof artifacts !== "object") {
+    return [];
+  }
+
+  return Object.entries(artifacts)
+    .map(([name, value]) => {
+      if (!value || typeof value !== "object") {
+        return null;
+      }
+
+      const typedValue = value as Record<string, unknown>;
+      const path = typedValue.path;
+      const signedUrl = typedValue.signedUrl;
+
+      if (typeof path !== "string" || typeof signedUrl !== "string") {
+        return null;
+      }
+
+      return { name, path, signedUrl };
+    })
+    .filter((value): value is ArtifactInfo => Boolean(value));
+}
+
+export function RenderJobMonitor({
+  initialLessonId = "",
+  focusJobId = null,
+}: RenderJobMonitorProps) {
+  const [lessonId, setLessonId] = useState(initialLessonId);
   const [jobs, setJobs] = useState<RenderJob[]>([]);
+  const [selectedJob, setSelectedJob] = useState<RenderJobDetail | null>(null);
   const [loading, setLoading] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadJobs = useCallback(async () => {
@@ -49,6 +100,51 @@ export function RenderJobMonitor() {
       setLoading(false);
     }
   }, [lessonId]);
+
+  const loadJobDetails = useCallback(async (jobId: string) => {
+    setDetailLoading(true);
+
+    try {
+      const response = await fetch(`/api/video/jobs/${jobId}`);
+      const body = (await response.json()) as {
+        job?: RenderJobDetail;
+        error?: string;
+      };
+
+      if (!response.ok) {
+        setError(body.error ?? "Failed to load job details");
+        setSelectedJob(null);
+        return;
+      }
+
+      setSelectedJob(body.job ?? null);
+    } catch (detailError) {
+      setError(String(detailError));
+      setSelectedJob(null);
+    } finally {
+      setDetailLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    setLessonId(initialLessonId);
+  }, [initialLessonId]);
+
+  useEffect(() => {
+    if (focusJobId) {
+      loadJobDetails(focusJobId);
+    }
+  }, [focusJobId, loadJobDetails]);
+
+  const selectedArtifacts = useMemo(
+    () => readArtifacts(selectedJob?.queue_response),
+    [selectedJob]
+  );
+
+  const videoArtifact = useMemo(
+    () => selectedArtifacts.find((artifact) => artifact.name === "videoMp4"),
+    [selectedArtifacts]
+  );
 
   return (
     <section className="rounded-lg border p-4">
@@ -90,12 +186,73 @@ export function RenderJobMonitor() {
             <p className="text-xs text-gray-600 dark:text-gray-300">
               created: {new Date(job.created_at).toLocaleString()}
             </p>
+            <button
+              type="button"
+              className="mt-2 rounded border px-2 py-1 text-xs font-medium"
+              onClick={() => loadJobDetails(job.id)}
+            >
+              View Details
+            </button>
             {job.error_message ? (
               <p className="mt-1 text-xs text-red-600">{job.error_message}</p>
             ) : null}
           </li>
         ))}
       </ul>
+
+      <div className="mt-4 rounded-md border p-3">
+        <h3 className="text-sm font-semibold">Selected Job Details</h3>
+
+        {detailLoading ? (
+          <p className="mt-2 text-xs text-gray-600 dark:text-gray-300">Loading details...</p>
+        ) : null}
+
+        {!detailLoading && !selectedJob ? (
+          <p className="mt-2 text-xs text-gray-600 dark:text-gray-300">
+            Select a job to inspect artifacts and playback URL.
+          </p>
+        ) : null}
+
+        {selectedJob ? (
+          <div className="mt-2 space-y-2 text-xs">
+            <p>
+              <span className="font-medium">jobId:</span> {selectedJob.id}
+            </p>
+            <p>
+              <span className="font-medium">status:</span> {selectedJob.status}
+            </p>
+
+            {selectedArtifacts.length > 0 ? (
+              <ul className="space-y-1">
+                {selectedArtifacts.map((artifact) => (
+                  <li key={artifact.name}>
+                    <a
+                      href={artifact.signedUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline"
+                    >
+                      {artifact.name}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-gray-600 dark:text-gray-300">
+                No artifacts available yet.
+              </p>
+            )}
+
+            {videoArtifact ? (
+              <video
+                controls
+                className="w-full rounded border"
+                src={videoArtifact.signedUrl}
+              />
+            ) : null}
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }

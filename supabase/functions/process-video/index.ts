@@ -43,6 +43,54 @@ interface PythonRenderResponse {
   artifacts: PythonRenderArtifacts;
 }
 
+interface PythonRenderFailureDetail {
+  error?: string;
+  stage?: string;
+  returncode?: number;
+  command?: string;
+  stderrTail?: string;
+  stdoutTail?: string;
+  message?: string;
+}
+
+class PythonRenderServiceError extends Error {
+  statusCode: number;
+  detail: PythonRenderFailureDetail | null;
+  responseBody: string;
+
+  constructor(
+    statusCode: number,
+    message: string,
+    detail: PythonRenderFailureDetail | null,
+    responseBody: string
+  ) {
+    super(message);
+    this.name = "PythonRenderServiceError";
+    this.statusCode = statusCode;
+    this.detail = detail;
+    this.responseBody = responseBody;
+  }
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof PythonRenderServiceError) {
+    const stage = error.detail?.stage ? `[${error.detail.stage}] ` : "";
+    const returncode =
+      typeof error.detail?.returncode === "number"
+        ? ` (exit ${error.detail.returncode})`
+        : "";
+    const core =
+      error.detail?.error ?? error.detail?.message ?? "Python render service error";
+    return `${stage}${core}${returncode}`;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
 async function updateRenderJob(
   jobId: string,
   payload: Record<string, unknown>
@@ -154,92 +202,56 @@ function decodeBase64ToBytes(base64: string): Uint8Array {
 async function renderWithPythonService(
   payload: ProcessVideoPayload,
   jobId: string
-): Promise<PythonRenderArtifacts | null> {
+): Promise<PythonRenderArtifacts> {
   const pythonServiceUrl =
     edgeRuntime.Deno?.env.get("PYTHON_AI_SERVICE_URL") ?? "http://127.0.0.1:8000";
 
-  try {
-    const response = await fetch(`${pythonServiceUrl}/render-replay`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        ...payload,
-        jobId,
-      }),
-    });
+  const response = await fetch(`${pythonServiceUrl}/render-replay`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      ...payload,
+      jobId,
+    }),
+  });
 
-    if (!response.ok) {
-      return null;
+  if (!response.ok) {
+    const responseBody = await response.text();
+    let detail: PythonRenderFailureDetail | null = null;
+
+    try {
+      const parsed = JSON.parse(responseBody) as {
+        detail?: PythonRenderFailureDetail | string;
+      };
+
+      if (parsed?.detail && typeof parsed.detail === "object") {
+        detail = parsed.detail;
+      } else if (typeof parsed?.detail === "string") {
+        detail = { message: parsed.detail };
+      }
+    } catch {
+      detail = null;
     }
 
-    const data = (await response.json()) as PythonRenderResponse;
-    if (!data.artifacts) {
-      return null;
-    }
-
-    return data.artifacts;
-  } catch {
-    return null;
+    const detailMessage = detail?.error ?? detail?.message;
+    throw new PythonRenderServiceError(
+      response.status,
+      detailMessage
+        ? `Python render service failed (${response.status}): ${detailMessage}`
+        : `Python render service failed (${response.status})`,
+      detail,
+      responseBody
+    );
   }
-}
 
-async function createPlaceholderArtifactsData(payload: ProcessVideoPayload) {
-  const encoder = new TextEncoder();
-  const hlsManifest = [
-    "#EXTM3U",
-    "#EXT-X-VERSION:3",
-    "#EXT-X-TARGETDURATION:1",
-    "#EXT-X-MEDIA-SEQUENCE:0",
-    "#EXTINF:1.0,",
-    "segment0.ts",
-    "#EXT-X-ENDLIST",
-  ].join("\n");
+  const data = (await response.json()) as PythonRenderResponse;
+  if (!data.artifacts) {
+    throw new Error("Python render service response is missing artifacts payload");
+  }
 
-  const metadata = JSON.stringify(
-    {
-      lessonId: payload.lessonId,
-      provider: payload.provider,
-      generatedAt: new Date().toISOString(),
-      estimatedDurationMs: payload.estimatedDurationMs,
-      chapterMarkers: payload.chapterMarkers,
-      mode: "placeholder",
-    },
-    null,
-    2
-  );
-
-  return {
-    sceneScript: {
-      name: "scene.py",
-      bytes: encoder.encode(payload.script),
-      contentType: "text/x-python",
-    },
-    videoMp4: {
-      name: "lesson.mp4",
-      bytes: encoder.encode("MVP placeholder MP4 bytes - replace with FFmpeg output"),
-      contentType: "video/mp4",
-    },
-    hlsManifest: {
-      name: "index.m3u8",
-      bytes: encoder.encode(hlsManifest),
-      contentType: "application/vnd.apple.mpegurl",
-    },
-    hlsSegments: [
-      {
-        name: "segment0.ts",
-        bytes: encoder.encode("placeholder-ts"),
-        contentType: "video/mp2t",
-      },
-    ],
-    metadata: {
-      name: "metadata.json",
-      bytes: encoder.encode(metadata),
-      contentType: "application/json",
-    },
-    mode: "placeholder",
-  };
+  return data.artifacts;
 }
 
 async function createSignedUrl(path: string): Promise<string> {
@@ -279,37 +291,34 @@ async function createArtifacts(payload: ProcessVideoPayload, jobId: string) {
   const hlsBasePath = `${basePath}/hls`;
 
   const pythonArtifacts = await renderWithPythonService(payload, jobId);
-  const artifactSource =
-    pythonArtifacts === null
-      ? await createPlaceholderArtifactsData(payload)
-      : {
-          sceneScript: {
-            name: pythonArtifacts.sceneScript.name,
-            bytes: decodeBase64ToBytes(pythonArtifacts.sceneScript.contentB64),
-            contentType: "text/x-python",
-          },
-          videoMp4: {
-            name: pythonArtifacts.videoMp4.name,
-            bytes: decodeBase64ToBytes(pythonArtifacts.videoMp4.contentB64),
-            contentType: "video/mp4",
-          },
-          hlsManifest: {
-            name: pythonArtifacts.hlsManifest.name,
-            bytes: decodeBase64ToBytes(pythonArtifacts.hlsManifest.contentB64),
-            contentType: "application/vnd.apple.mpegurl",
-          },
-          hlsSegments: pythonArtifacts.hlsSegments.map((segment) => ({
-            name: segment.name,
-            bytes: decodeBase64ToBytes(segment.contentB64),
-            contentType: "video/mp2t",
-          })),
-          metadata: {
-            name: pythonArtifacts.metadata.name,
-            bytes: decodeBase64ToBytes(pythonArtifacts.metadata.contentB64),
-            contentType: "application/json",
-          },
-          mode: "python",
-        };
+  const artifactSource = {
+    sceneScript: {
+      name: pythonArtifacts.sceneScript.name,
+      bytes: decodeBase64ToBytes(pythonArtifacts.sceneScript.contentB64),
+      contentType: "text/x-python",
+    },
+    videoMp4: {
+      name: pythonArtifacts.videoMp4.name,
+      bytes: decodeBase64ToBytes(pythonArtifacts.videoMp4.contentB64),
+      contentType: "video/mp4",
+    },
+    hlsManifest: {
+      name: pythonArtifacts.hlsManifest.name,
+      bytes: decodeBase64ToBytes(pythonArtifacts.hlsManifest.contentB64),
+      contentType: "application/vnd.apple.mpegurl",
+    },
+    hlsSegments: pythonArtifacts.hlsSegments.map((segment) => ({
+      name: segment.name,
+      bytes: decodeBase64ToBytes(segment.contentB64),
+      contentType: "video/mp2t",
+    })),
+    metadata: {
+      name: pythonArtifacts.metadata.name,
+      bytes: decodeBase64ToBytes(pythonArtifacts.metadata.contentB64),
+      contentType: "application/json",
+    },
+    mode: "python",
+  };
 
   const scriptPath = `${basePath}/${artifactSource.sceneScript.name}`;
   const videoPath = `${basePath}/${artifactSource.videoMp4.name}`;
@@ -471,21 +480,39 @@ edgeRuntime.Deno.serve(async (request: Request) => {
 
     if (jobId) {
       const failedAt = new Date().toISOString();
+      const errorMessage = toErrorMessage(error);
+
       await updateRenderJob(jobId, {
         status: "failed",
-        error_message: String(error),
+        error_message: errorMessage,
+        queue_response:
+          error instanceof PythonRenderServiceError
+            ? {
+                status: "failed",
+                source: "python-render-service",
+                statusCode: error.statusCode,
+                detail: error.detail,
+                responseBody: error.responseBody,
+              }
+            : {
+                status: "failed",
+                source: "process-video",
+                message: errorMessage,
+              },
         completed_at: failedAt,
         updated_at: failedAt,
       });
     }
 
+    const errorMessage = toErrorMessage(error);
+
     return new Response(
       JSON.stringify({
-        error: "Invalid payload",
-        details: String(error),
+        error: "Render processing failed",
+        details: errorMessage,
       }),
       {
-        status: 400,
+        status: error instanceof PythonRenderServiceError ? 502 : 400,
         headers: { "Content-Type": "application/json" },
       }
     );

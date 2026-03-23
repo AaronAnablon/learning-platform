@@ -19,9 +19,7 @@ npm install
 
 2) Add environment values:
 
-```bash
-cp .env.example .env.local
-```
+Create a `.env` file in the project root, then fill it with all required keys.
 
 3) Run the development server:
 
@@ -50,6 +48,7 @@ This repo supports a split deployment model:
 	 - `SUPABASE_SERVICE_ROLE_KEY`
 	 - `SUPABASE_VIDEO_FUNCTION=process-video`
 	 - `SUPABASE_STORAGE_BUCKET=render-artifacts`
+	 - `PYTHON_AI_SERVICE_URL` (Render AI service base URL for render preflight)
 	 - `OPENAI_API_KEY`, `OPENAI_MODEL`
 	 - `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID`, `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`
 
@@ -92,6 +91,26 @@ npx supabase functions deploy process-video
 2. Query `GET /api/video/jobs?lessonId=<id>`.
 3. Confirm `status=completed` and signed artifact URLs in job response.
 
+### 5) Validate render preflight quickly (PowerShell)
+
+Run from project root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-render-preflight.ps1 -BaseUrl http://localhost:3000
+```
+
+Expect preflight failure (worker not configured/reachable):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-render-preflight.ps1 -BaseUrl http://localhost:3000 -ExpectedHttpStatus 503
+```
+
+Expect successful queueing (all env + worker healthy):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-render-preflight.ps1 -BaseUrl http://localhost:3000 -ExpectedHttpStatus 200 -ExpectedApiStatus queued
+```
+
 ## Included Endpoints
 
 - `GET /api/health`
@@ -100,6 +119,7 @@ npx supabase functions deploy process-video
 - `POST /api/create-checkout-session`
 - `POST /api/stripe/webhook`
 - `POST /api/video/render`
+- `GET /api/video/render/health-debug`
 - `GET /api/video/jobs`
 - `GET /api/video/jobs/:jobId`
 
@@ -119,8 +139,7 @@ Required environment variables for dispatch mode:
 - `SUPABASE_SERVICE_ROLE_KEY`
 - Optional: `SUPABASE_VIDEO_FUNCTION` (defaults to `process-video`)
 - Optional: `SUPABASE_STORAGE_BUCKET` (defaults to `render-artifacts`)
-- Optional: `PYTHON_AI_SERVICE_URL` (public URL of Render AI service)
-- Optional: `PYTHON_AI_SERVICE_URL` (used by `process-video` to request FFmpeg-rendered artifacts)
+- Required for real render: `PYTHON_AI_SERVICE_URL` (public URL of Render AI service used by `process-video`)
 
 If env vars are missing, the API returns `dry-run` with the compiled payload.
 
@@ -134,7 +153,8 @@ The `process-video` function uploads render artifacts to Supabase Storage and re
 Artifact generation mode:
 
 - `python` mode: pulls real FFmpeg-rendered MP4/HLS/script artifacts from `PYTHON_AI_SERVICE_URL`.
-- `placeholder` mode: safe fallback when Python render service is unreachable.
+
+If the Python render service is unreachable or returns invalid artifacts, `process-video` now fails the job instead of emitting placeholder files.
 
 ### Render Job Persistence
 

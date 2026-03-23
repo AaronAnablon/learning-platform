@@ -47,6 +47,10 @@ function formatVoiceComment(event: ReplayEvent): string | null {
   return `# [${event.timestampMs}ms] Voice: ${event.text.replace(/\n/g, " ")}`;
 }
 
+function toPythonStringLiteral(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, " ");
+}
+
 export function compileEventsToManimScript(
   lessonId: string,
   events: ReplayEvent[]
@@ -65,32 +69,74 @@ export function compileEventsToManimScript(
     .map((event) => formatVoiceComment(event))
     .filter((line): line is string => Boolean(line));
 
+  const replayActions = normalizedEvents.map((event) => {
+    const prefix = `        # [${event.timestampMs}ms]`;
+
+    switch (event.type) {
+      case "pen_stroke": {
+        const strokeId = toPythonStringLiteral(event.strokeId);
+        const color = toPythonStringLiteral(event.color);
+        const points = event.points
+          .map((point) => `to_scene((${point.x.toFixed(4)}, ${point.y.toFixed(4)}))`)
+          .join(", ");
+
+        return [
+          `${prefix} draw stroke ${strokeId} (${event.points.length} points)`,
+          `        points = [${points}]`,
+          "        if len(points) >= 2:",
+          "            segment_group = VGroup(*[",
+          `                Line(points[i], points[i + 1], color='${color}', stroke_width=${Math.max(event.width, 1).toFixed(2)})`,
+          "                for i in range(len(points) - 1)",
+          "            ])",
+          "            self.play(Create(segment_group), run_time=max(0.15, min(1.0, len(points) * 0.03)))",
+          `            strokes['${strokeId}'] = segment_group`,
+        ].join("\n");
+      }
+      case "erase": {
+        const eraseId = toPythonStringLiteral(event.eraseId);
+        return [
+          `${prefix} erase ${eraseId} (${event.points.length} points)`,
+          `        if '${eraseId}' in strokes:`,
+          `            self.play(FadeOut(strokes.pop('${eraseId}')), run_time=0.2)`,
+        ].join("\n");
+      }
+      case "slide_change": {
+        const title = toPythonStringLiteral(
+          event.title?.trim() || `Slide ${event.slideId}`
+        );
+        return [
+          `${prefix} slide -> ${toPythonStringLiteral(event.slideId)}`,
+          `        next_slide = Text('${title}').scale(0.5).to_edge(UP)`,
+          "        self.play(Transform(current_slide, next_slide), run_time=0.35)",
+        ].join("\n");
+      }
+      case "voice_marker":
+        return `${prefix} voice marker -> ${event.text.replace(/\n/g, " ")}`;
+    }
+  });
+
   const script = [
     "from manim import *",
+    "",
+    "def to_scene(point):",
+    "    x = (point[0] - 0.5) * 12",
+    "    y = (0.5 - point[1]) * 6.75",
+    "    return [x, y, 0]",
     "",
     `class Lesson_${lessonId.replace(/[^a-zA-Z0-9_]/g, "_")}(Scene):`,
     "    def construct(self):",
     "        title = Text('Whiteboard Replay').scale(0.8)",
-    "        self.play(FadeIn(title))",
-    "        self.wait(0.3)",
-    "        self.play(FadeOut(title))",
+    "        self.play(FadeIn(title), run_time=0.25)",
+    "        self.wait(0.2)",
+    "        self.play(FadeOut(title), run_time=0.2)",
+    "",
+    "        strokes = {}",
+    "        current_slide = Text('Lesson Start').scale(0.5).to_edge(UP)",
+    "        self.play(FadeIn(current_slide), run_time=0.25)",
     "",
     "        # Replay actions (generated from event stream)",
-    ...normalizedEvents.map((event) => {
-      const prefix = `        # [${event.timestampMs}ms]`;
-      switch (event.type) {
-        case "pen_stroke":
-          return `${prefix} draw stroke ${event.strokeId} (${event.points.length} points)`;
-        case "erase":
-          return `${prefix} erase ${event.eraseId} (${event.points.length} points)`;
-        case "slide_change":
-          return `${prefix} slide -> ${event.slideId}`;
-        case "voice_marker":
-          return `${prefix} voice marker -> ${event.text.replace(/\n/g, " ")}`;
-      }
-    }),
+    ...replayActions,
     "",
-    "        # TODO: replace comments above with actual Manim mobject operations",
     "        self.wait(0.5)",
     "",
     "# Voice alignment markers",
