@@ -143,6 +143,50 @@ def _run_command(command: list[str], command_name: str) -> None:
         )
 
 
+def _probe_media_duration_seconds(path: Path, ffprobe_bin: str) -> float:
+    command = [
+        ffprobe_bin,
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(path),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RenderPipelineError(
+            stage="ffprobe",
+            command=command,
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+
+    duration_text = result.stdout.strip()
+    try:
+        return float(duration_text)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Unable to parse media duration from ffprobe output: {duration_text}"
+        ) from exc
+
+
+def _validate_video_output(video_path: Path, ffprobe_bin: str) -> None:
+    file_size = video_path.stat().st_size
+    if file_size < 12_000:
+        raise RuntimeError(
+            f"Rendered MP4 appears empty (size={file_size} bytes): {video_path.name}"
+        )
+
+    duration_seconds = _probe_media_duration_seconds(video_path, ffprobe_bin)
+    if duration_seconds <= 0.5:
+        raise RuntimeError(
+            f"Rendered MP4 duration is too short ({duration_seconds:.3f}s): {video_path.name}"
+        )
+
+
 def _encode_file(path: Path) -> str:
     return base64.b64encode(path.read_bytes()).decode("utf-8")
 
@@ -246,6 +290,9 @@ def _generate_video_artifacts(payload: ReplayRenderRequest) -> dict:
                 str(mp4_path),
             ]
         )
+
+        ffprobe_bin = os.getenv("FFPROBE_PATH", "ffprobe")
+        _validate_video_output(mp4_path, ffprobe_bin)
 
         _run_ffmpeg(
             [
