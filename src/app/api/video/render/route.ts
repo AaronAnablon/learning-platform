@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  buildProcessVideoPayload,
   buildProcessVideoPayloadFromScript,
 } from "@/lib/replay/compiler";
 import { ReplayRenderRequest } from "@/lib/replay/types";
@@ -32,6 +31,25 @@ function extractErrorMessage(error: unknown) {
   }
 
   return String(error);
+}
+
+function readVideoUrlFromDispatchResult(input: unknown): string | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+
+  const artifacts = (input as Record<string, unknown>).artifacts;
+  if (!artifacts || typeof artifacts !== "object") {
+    return null;
+  }
+
+  const videoMp4 = (artifacts as Record<string, unknown>).videoMp4;
+  if (!videoMp4 || typeof videoMp4 !== "object") {
+    return null;
+  }
+
+  const signedUrl = (videoMp4 as Record<string, unknown>).signedUrl;
+  return typeof signedUrl === "string" && signedUrl.trim() ? signedUrl : null;
 }
 
 async function sleep(ms: number) {
@@ -106,18 +124,15 @@ export async function POST(request: NextRequest) {
     }
 
     const hasScript = Boolean(payload.script?.trim());
-    const hasEvents = Array.isArray(payload.events) && payload.events.length > 0;
 
-    if (!hasScript && !hasEvents) {
+    if (!hasScript) {
       return NextResponse.json(
-        { error: "Either script or a non-empty events array is required" },
+        { error: "manimScript is required to queue render jobs" },
         { status: 400 }
       );
     }
 
-    let processVideoPayload = hasScript
-      ? buildProcessVideoPayloadFromScript(payload)
-      : buildProcessVideoPayload(payload);
+    let processVideoPayload = buildProcessVideoPayloadFromScript(payload);
 
     const supabaseUrl =
       process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -196,6 +211,7 @@ export async function POST(request: NextRequest) {
     });
 
     const dispatchResult = await dispatchResponse.json();
+    const videoUrl = readVideoUrlFromDispatchResult(dispatchResult);
 
     if (!dispatchResponse.ok) {
       if (jobId) {
@@ -238,6 +254,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       status: "queued",
       jobId,
+      videoUrl,
       functionName,
       queueResult: dispatchResult,
       payload: processVideoPayload,

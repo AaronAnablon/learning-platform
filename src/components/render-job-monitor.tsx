@@ -22,6 +22,14 @@ type ArtifactInfo = {
   signedUrl: string;
 };
 
+type StorageArtifact = {
+  name: string;
+  path: string;
+  signedUrl?: string;
+  size?: number | null;
+  created_at?: string | null;
+};
+
 interface RenderJobMonitorProps {
   initialLessonId?: string;
   focusJobId?: string | null;
@@ -68,6 +76,9 @@ export function RenderJobMonitor({
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [storageItems, setStorageItems] = useState<StorageArtifact[]>([]);
+  const [storageLoading, setStorageLoading] = useState(false);
+  const [storageError, setStorageError] = useState<string | null>(null);
 
   const loadJobs = useCallback(async () => {
     setLoading(true);
@@ -125,6 +136,41 @@ export function RenderJobMonitor({
       setDetailLoading(false);
     }
   }, []);
+
+  const loadStorageArtifacts = useCallback(async () => {
+    const trimmedLessonId = lessonId.trim();
+    if (!trimmedLessonId) {
+      setStorageError("Enter a lessonId to check storage.");
+      setStorageItems([]);
+      return;
+    }
+
+    setStorageLoading(true);
+    setStorageError(null);
+
+    try {
+      const response = await fetch(
+        `/api/video/artifacts?lessonId=${encodeURIComponent(trimmedLessonId)}`
+      );
+      const body = (await response.json()) as {
+        items?: StorageArtifact[];
+        error?: string;
+      };
+
+      if (!response.ok) {
+        setStorageError(body.error ?? "Failed to list storage artifacts");
+        setStorageItems([]);
+        return;
+      }
+
+      setStorageItems(body.items ?? []);
+    } catch (storageFetchError) {
+      setStorageError(String(storageFetchError));
+      setStorageItems([]);
+    } finally {
+      setStorageLoading(false);
+    }
+  }, [lessonId]);
 
   useEffect(() => {
     setLessonId(initialLessonId);
@@ -251,6 +297,55 @@ export function RenderJobMonitor({
               />
             ) : null}
           </div>
+        ) : null}
+      </div>
+
+      <div className="mt-4 rounded-md border p-3">
+        <h3 className="text-sm font-semibold">Storage Artifacts</h3>
+        <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+          Lists objects saved to Supabase Storage for the current lessonId.
+        </p>
+
+        <button
+          type="button"
+          onClick={loadStorageArtifacts}
+          className="mt-2 rounded border px-2 py-1 text-xs font-medium"
+        >
+          {storageLoading ? "Checking..." : "Check Storage"}
+        </button>
+
+        {storageError ? (
+          <p className="mt-2 text-xs text-red-600">{storageError}</p>
+        ) : null}
+
+        {!storageLoading && storageItems.length === 0 && !storageError ? (
+          <p className="mt-2 text-xs text-gray-600 dark:text-gray-300">
+            No storage artifacts found.
+          </p>
+        ) : null}
+
+        {storageItems.length > 0 ? (
+          <ul className="mt-2 space-y-1 text-xs">
+            {storageItems.map((item) => (
+              <li key={item.path} className="flex flex-col gap-1">
+                <span className="font-medium">{item.name}</span>
+                <span className="text-gray-600 dark:text-gray-300">
+                  {item.path}
+                  {typeof item.size === "number" ? ` • ${item.size} bytes` : ""}
+                </span>
+                {item.signedUrl ? (
+                  <a
+                    href={item.signedUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline"
+                  >
+                    Open MP4
+                  </a>
+                ) : null}
+              </li>
+            ))}
+          </ul>
         ) : null}
       </div>
     </section>

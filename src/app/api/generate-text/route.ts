@@ -13,6 +13,13 @@ type GeneratedLesson = {
     title: string;
     timestampMs: number;
   }>;
+  renderPlan: Array<{
+    id: string;
+    title: string;
+    timestampMs: number;
+    onScreenText: string;
+    visualGoal: string;
+  }>;
   estimatedDurationMs: number;
   manimScript: string;
 };
@@ -50,8 +57,29 @@ const lessonJsonSchema = {
         required: ["title", "timestampMs"],
       },
     },
+    renderPlan: {
+      type: "array",
+      minItems: 2,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: { type: "string" },
+          title: { type: "string" },
+          timestampMs: { type: "integer", minimum: 0 },
+          onScreenText: { type: "string" },
+          visualGoal: { type: "string" },
+        },
+        required: ["id", "title", "timestampMs", "onScreenText", "visualGoal"],
+      },
+    },
     estimatedDurationMs: { type: "integer", minimum: 1000 },
-    manimScript: { type: "string" },
+    manimScript: {
+      type: "string",
+      minLength: 80,
+      pattern:
+        "class\\s+[A-Za-z_][A-Za-z0-9_]*\\s*\\([^)]*Scene[^)]*\\)\\s*:[\\s\\S]*def\\s+construct\\s*\\(\\s*self\\s*\\)",
+    },
   },
   required: [
     "title",
@@ -59,6 +87,7 @@ const lessonJsonSchema = {
     "lessonText",
     "sections",
     "chapterMarkers",
+    "renderPlan",
     "estimatedDurationMs",
     "manimScript",
   ],
@@ -78,7 +107,21 @@ function parseGeneratedLesson(content: string): GeneratedLesson {
     throw new Error("Generated lesson is missing manimScript");
   }
 
-  return parsed;
+  if (!Array.isArray(parsed.renderPlan) || parsed.renderPlan.length === 0) {
+    throw new Error("Generated lesson is missing renderPlan");
+  }
+
+  const sortedRenderPlan = [...parsed.renderPlan].sort(
+    (left, right) => left.timestampMs - right.timestampMs
+  );
+
+  return {
+    ...parsed,
+    chapterMarkers: [...parsed.chapterMarkers].sort(
+      (left, right) => left.timestampMs - right.timestampMs
+    ),
+    renderPlan: sortedRenderPlan,
+  };
 }
 
 export async function POST(request: NextRequest) {
@@ -104,14 +147,17 @@ export async function POST(request: NextRequest) {
         {
           role: "system",
           content:
-            "You are an instructional designer and Manim author. Produce a complete lesson directly. Do not ask the user for more information, clarification, or follow-up questions. Make reasonable assumptions and provide final output.",
+            "You are an instructional designer and Manim author. Produce complete output directly as JSON only. Do not ask for clarification. Ensure the renderPlan timeline and chapterMarkers match what the manimScript animates on screen.",
         },
         {
           role: "user",
           content: [
-            "Generate a complete lesson for this prompt and return only valid JSON.",
-            "Include a runnable Manim script in manimScript with one Scene class and a construct method.",
-            "Set chapterMarkers in ascending timestampMs order.",
+            "Generate a complete lesson for this prompt and return only valid JSON following the schema.",
+            "Return fields: title, objective, lessonText, sections, chapterMarkers, renderPlan, estimatedDurationMs, manimScript.",
+            "renderPlan must be a chronological array of steps with {id,title,timestampMs,onScreenText,visualGoal}.",
+            "manimScript must be runnable Python code with exactly one Scene class and a construct method.",
+            "The script must render visible objects (Text/MathTex/Shapes) and animate all renderPlan steps in sequence.",
+            "Do not wrap the script with markdown code fences.",
             "Prompt:",
             prompt,
           ].join("\n\n"),
