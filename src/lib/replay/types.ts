@@ -58,7 +58,10 @@ export interface RenderOptions {
 
 export interface ReplayRenderRequest {
   lessonId: string;
-  events: ReplayEvent[];
+  events?: ReplayEvent[];
+  script?: string;
+  estimatedDurationMs?: number;
+  chapterMarkers?: Array<{ title: string; timestampMs: number }>;
   audioUrl?: string;
   options?: Partial<RenderOptions>;
 }

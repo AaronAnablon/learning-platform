@@ -4,9 +4,19 @@ import { useState } from "react";
 import { RenderJobMonitor } from "@/components/render-job-monitor";
 
 type GenerateResponse = {
-  text?: string;
+  lesson?: GeneratedLesson;
   error?: string;
   details?: string;
+};
+
+type GeneratedLesson = {
+  title: string;
+  objective: string;
+  lessonText: string;
+  sections: Array<{ title: string; content: string }>;
+  chapterMarkers: Array<{ title: string; timestampMs: number }>;
+  estimatedDurationMs: number;
+  manimScript: string;
 };
 
 type QueueRenderResponse = {
@@ -100,11 +110,32 @@ function buildDefaultEvents(lessonTitle: string, generatedText: string): ReplayE
   return events;
 }
 
+function chapterMarkersToEvents(
+  chapterMarkers: Array<{ title: string; timestampMs: number }>
+): ReplayEvent[] {
+  return chapterMarkers
+    .filter(
+      (marker) =>
+        marker.title.trim().length > 0 &&
+        Number.isFinite(marker.timestampMs) &&
+        marker.timestampMs >= 0
+    )
+    .sort((left, right) => left.timestampMs - right.timestampMs)
+    .map((marker, index) => ({
+      id: `slide-${index + 1}`,
+      timestampMs: marker.timestampMs,
+      type: "slide_change",
+      slideId: `section-${index + 1}`,
+      title: marker.title,
+    }));
+}
+
 export function MvpStudio() {
   const [prompt, setPrompt] = useState("");
   const [lessonTitle, setLessonTitle] = useState("Intro Lesson");
   const [lessonId, setLessonId] = useState(`lesson-${Date.now()}`);
-  const [generatedText, setGeneratedText] = useState("");
+  const [generatedLesson, setGeneratedLesson] = useState<GeneratedLesson | null>(null);
+  const [generatedLessonJson, setGeneratedLessonJson] = useState("");
   const [eventsJson, setEventsJson] = useState("");
   const [working, setWorking] = useState<"idle" | "generating" | "queuing">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -131,7 +162,17 @@ export function MvpStudio() {
         return;
       }
 
-      setGeneratedText(body.text ?? "");
+      if (!body.lesson) {
+        setError("Generation response did not include lesson JSON.");
+        return;
+      }
+
+      setGeneratedLesson(body.lesson);
+      setGeneratedLessonJson(JSON.stringify(body.lesson, null, 2));
+
+      if (body.lesson.title?.trim()) {
+        setLessonTitle(body.lesson.title.trim());
+      }
     } catch (requestError) {
       setError(String(requestError));
     } finally {
@@ -148,7 +189,14 @@ export function MvpStudio() {
       return parsed as ReplayEvent[];
     }
 
-    return buildDefaultEvents(lessonTitle, generatedText);
+    if (generatedLesson?.chapterMarkers?.length) {
+      const markerEvents = chapterMarkersToEvents(generatedLesson.chapterMarkers);
+      if (markerEvents.length > 0) {
+        return markerEvents;
+      }
+    }
+
+    return buildDefaultEvents(lessonTitle, generatedLesson?.lessonText ?? "");
   }
 
   async function queueRender() {
@@ -166,6 +214,9 @@ export function MvpStudio() {
         body: JSON.stringify({
           lessonId,
           events,
+          script: generatedLesson?.manimScript,
+          chapterMarkers: generatedLesson?.chapterMarkers,
+          estimatedDurationMs: generatedLesson?.estimatedDurationMs,
         }),
       });
 
@@ -199,9 +250,9 @@ export function MvpStudio() {
       </header>
 
       <section className="rounded-lg border p-5">
-        <h2 className="text-lg font-semibold">1) Generate lesson text</h2>
+        <h2 className="text-lg font-semibold">1) Generate lesson JSON</h2>
         <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
-          Use GPT to draft lesson narration or script notes.
+          Use GPT to produce a complete lesson JSON including a Manim script.
         </p>
 
         <textarea
@@ -218,15 +269,28 @@ export function MvpStudio() {
             onClick={generateLessonText}
             disabled={working !== "idle" || !prompt.trim()}
           >
-            {working === "generating" ? "Generating..." : "Generate Text"}
+            {working === "generating" ? "Generating..." : "Generate Lesson JSON"}
           </button>
         </div>
 
         <textarea
           className="mt-3 min-h-28 w-full rounded-md border px-3 py-2 text-sm"
-          placeholder="Generated lesson text appears here"
-          value={generatedText}
-          onChange={(event) => setGeneratedText(event.target.value)}
+          placeholder="Generated lesson JSON appears here"
+          value={generatedLessonJson}
+          onChange={(event) => {
+            const next = event.target.value;
+            setGeneratedLessonJson(next);
+
+            try {
+              const parsed = JSON.parse(next) as GeneratedLesson;
+              setGeneratedLesson(parsed);
+              if (parsed.title?.trim()) {
+                setLessonTitle(parsed.title.trim());
+              }
+            } catch {
+              // Keep raw edited text while user is typing invalid JSON.
+            }
+          }}
         />
       </section>
 

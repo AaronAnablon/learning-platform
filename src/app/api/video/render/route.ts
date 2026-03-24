@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { buildProcessVideoPayload } from "@/lib/replay/compiler";
+import {
+  buildProcessVideoPayload,
+  buildProcessVideoPayloadFromScript,
+} from "@/lib/replay/compiler";
 import { ReplayRenderRequest } from "@/lib/replay/types";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -102,14 +105,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!Array.isArray(payload.events) || payload.events.length === 0) {
+    const hasScript = Boolean(payload.script?.trim());
+    const hasEvents = Array.isArray(payload.events) && payload.events.length > 0;
+
+    if (!hasScript && !hasEvents) {
       return NextResponse.json(
-        { error: "events array is required" },
+        { error: "Either script or a non-empty events array is required" },
         { status: 400 }
       );
     }
 
-    let processVideoPayload = buildProcessVideoPayload(payload);
+    let processVideoPayload = hasScript
+      ? buildProcessVideoPayloadFromScript(payload)
+      : buildProcessVideoPayload(payload);
 
     const supabaseUrl =
       process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;

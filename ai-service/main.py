@@ -18,6 +18,26 @@ class GenerateRequest(BaseModel):
     prompt: str
 
 
+class LessonSection(BaseModel):
+    title: str
+    content: str
+
+
+class ChapterMarker(BaseModel):
+    title: str
+    timestampMs: int = Field(ge=0)
+
+
+class GeneratedLesson(BaseModel):
+    title: str
+    objective: str
+    lessonText: str
+    sections: list[LessonSection]
+    chapterMarkers: list[ChapterMarker]
+    estimatedDurationMs: int = Field(ge=1000)
+    manimScript: str
+
+
 class StrokePoint(BaseModel):
     x: float
     y: float
@@ -89,6 +109,14 @@ def _tail_text(value: str, max_chars: int = 4000) -> str:
     if len(trimmed) <= max_chars:
         return trimmed
     return trimmed[-max_chars:]
+
+
+def _extract_json_content(text: str) -> str:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    return cleaned.strip()
 
 
 def _run_ffmpeg(command: list[str]) -> None:
@@ -296,9 +324,32 @@ def generate_text(payload: GenerateRequest):
 
     model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
+    system_prompt = (
+        "You are an instructional designer and Manim author. "
+        "Return a complete lesson as JSON only. "
+        "Do not ask for more information, clarification, or follow-up questions. "
+        "Make reasonable assumptions and finalize the lesson."
+    )
+
+    user_prompt = (
+        "Generate a lesson and return only JSON with this exact top-level structure: "
+        "{title, objective, lessonText, sections, chapterMarkers, estimatedDurationMs, manimScript}. "
+        "sections must be an array of {title, content}. "
+        "chapterMarkers must be an array of {title, timestampMs} in ascending timestamp order. "
+        "estimatedDurationMs must be >= 1000. "
+        "manimScript must be runnable Python Manim code with exactly one Scene class and a construct method. "
+        "Prompt:\n\n"
+        f"{payload.prompt}"
+    )
+
     try:
         llm = ChatOpenAI(model=model_name, api_key=api_key, temperature=0)
-        response = llm.invoke(payload.prompt)
+        response = llm.invoke(
+            [
+                ("system", system_prompt),
+                ("user", user_prompt),
+            ]
+        )
         content = response.content
 
         if isinstance(content, list):
@@ -309,9 +360,11 @@ def generate_text(payload: GenerateRequest):
         else:
             text = str(content).strip()
 
+        parsed = json.loads(_extract_json_content(text))
+        lesson = GeneratedLesson.model_validate(parsed)
+
         return {
-            "message": text,
-            "model": model_name,
+            "lesson": lesson.model_dump(),
         }
     except Exception as exc:
         raise HTTPException(

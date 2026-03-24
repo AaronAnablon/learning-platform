@@ -154,6 +154,9 @@ export function compileEventsToManimScript(
 export function buildProcessVideoPayload(
   request: ReplayRenderRequest
 ): ProcessVideoPayload {
+  assert(Array.isArray(request.events), "events must be provided");
+  assert(request.events.length > 0, "events must not be empty");
+
   const renderOptions = {
     ...defaultRenderOptions,
     ...request.options,
@@ -169,6 +172,81 @@ export function buildProcessVideoPayload(
     audioUrl: request.audioUrl,
     chapterMarkers: artifact.chapterMarkers,
     events: artifact.normalizedEvents,
+    renderOptions,
+  };
+}
+
+function normalizeChapterMarkers(
+  chapterMarkers?: Array<{ title: string; timestampMs: number }>
+) {
+  if (!Array.isArray(chapterMarkers) || chapterMarkers.length === 0) {
+    return [];
+  }
+
+  return [...chapterMarkers]
+    .filter(
+      (marker) =>
+        marker.title.trim().length > 0 &&
+        Number.isFinite(marker.timestampMs) &&
+        marker.timestampMs >= 0
+    )
+    .sort((left, right) => left.timestampMs - right.timestampMs);
+}
+
+function buildFallbackEventsFromMarkers(
+  chapterMarkers: Array<{ title: string; timestampMs: number }>
+): ReplayEvent[] {
+  if (chapterMarkers.length === 0) {
+    return [
+      {
+        id: "slide-0",
+        timestampMs: 0,
+        type: "slide_change",
+        slideId: "intro",
+        title: "Lesson Intro",
+      },
+    ];
+  }
+
+  return chapterMarkers.map((marker, index) => ({
+    id: `slide-${index + 1}`,
+    timestampMs: marker.timestampMs,
+    type: "slide_change",
+    slideId: `section-${index + 1}`,
+    title: marker.title,
+  }));
+}
+
+export function buildProcessVideoPayloadFromScript(
+  request: ReplayRenderRequest
+): ProcessVideoPayload {
+  const script = request.script?.trim();
+  assert(script, "script must be provided");
+
+  const renderOptions = {
+    ...defaultRenderOptions,
+    ...request.options,
+  };
+
+  const chapterMarkers = normalizeChapterMarkers(request.chapterMarkers);
+  const normalizedEvents =
+    Array.isArray(request.events) && request.events.length > 0
+      ? normalizeReplayEvents(request.events)
+      : buildFallbackEventsFromMarkers(chapterMarkers);
+
+  const estimatedDurationMs =
+    request.estimatedDurationMs && request.estimatedDurationMs > 0
+      ? request.estimatedDurationMs
+      : Math.max(normalizedEvents[normalizedEvents.length - 1]?.timestampMs ?? 0, 1000);
+
+  return {
+    lessonId: request.lessonId,
+    provider: "manim",
+    script,
+    estimatedDurationMs,
+    audioUrl: request.audioUrl,
+    chapterMarkers,
+    events: normalizedEvents,
     renderOptions,
   };
 }
